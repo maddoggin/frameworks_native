@@ -61,9 +61,9 @@ LOCAL_SHARED_LIBRARIES := \
 	libgui
 
 ifeq ($(BOARD_HAVE_HDMI_SUPPORT),SAMSUNG_HDMI_SUPPORT)
-        LOCAL_C_INCLUDES += vendor/samsung/origen/proprietary/include
-        LOCAL_LDFLAGS += vendor/samsung/origen/proprietary/system/lib/libfimc.so
-        LOCAL_LDFLAGS += vendor/samsung/origen/proprietary/system/lib/libhdmi.so
+        LOCAL_C_INCLUDES += vendor/samsung/origen_quad/proprietary/include
+        LOCAL_LDFLAGS += vendor/samsung/origen_quad/proprietary/system/lib/libfimc.so
+        LOCAL_LDFLAGS += vendor/samsung/origen_quad/proprietary/system/lib/libhdmi.so
 endif
 
 LOCAL_MODULE:= libsurfaceflinger
