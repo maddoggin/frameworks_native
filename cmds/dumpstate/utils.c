@@ -31,11 +31,14 @@
 #include <sys/klog.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/prctl.h>
 
 #include <cutils/debugger.h>
 #include <cutils/properties.h>
 #include <cutils/sockets.h>
 #include <private/android_filesystem_config.h>
+
+#include <selinux/android.h>
 
 #include "dumpstate.h"
 
@@ -198,6 +201,9 @@ int run_command(const char *title, int timeout_seconds, const char *command, ...
     if (pid == 0) {
         const char *args[1024] = {command};
         size_t arg;
+
+        /* make sure the child dies when dumpstate dies */
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
 
         va_list ap;
         va_start(ap, command);
@@ -398,6 +404,9 @@ const char *dump_traces() {
         if (!mkdir(anr_traces_dir, 0775)) {
             chown(anr_traces_dir, AID_SYSTEM, AID_SYSTEM);
             chmod(anr_traces_dir, 0775);
+            if (selinux_android_restorecon(anr_traces_dir) == -1) {
+                fprintf(stderr, "restorecon failed for %s: %s\n", anr_traces_dir, strerror(errno));
+            }
         } else if (errno != EEXIST) {
             fprintf(stderr, "mkdir(%s): %s\n", anr_traces_dir, strerror(errno));
             return NULL;

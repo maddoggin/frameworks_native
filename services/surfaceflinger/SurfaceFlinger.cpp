@@ -213,12 +213,22 @@ sp<IBinder> SurfaceFlinger::createDisplay(const String8& displayName,
     return token;
 }
 
+void SurfaceFlinger::createBuiltinDisplayLocked(DisplayDevice::DisplayType type) {
+    ALOGW_IF(mBuiltinDisplays[type],
+            "Overwriting display token for display type %d", type);
+    mBuiltinDisplays[type] = new BBinder();
+    DisplayDeviceState info(type);
+    // All non-virtual displays are currently considered secure.
+    info.isSecure = true;
+    mCurrentState.displays.add(mBuiltinDisplays[type], info);
+}
+
 sp<IBinder> SurfaceFlinger::getBuiltInDisplay(int32_t id) {
     if (uint32_t(id) >= DisplayDevice::NUM_DISPLAY_TYPES) {
         ALOGE("getDefaultDisplay: id=%d is not a valid default display id", id);
         return NULL;
     }
-    return mDefaultDisplays[id];
+    return mBuiltinDisplays[id];
 }
 
 sp<IGraphicBufferAlloc> SurfaceFlinger::createGraphicBufferAlloc()
@@ -484,6 +494,8 @@ status_t SurfaceFlinger::readyToRun()
     ALOGI(  "SurfaceFlinger's main thread ready to run. "
             "Initializing graphics H/W...");
 
+    Mutex::Autolock _l(mStateLock);
+
     // initialize EGL for the default display
     mEGLDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     eglInitialize(mEGLDisplay, NULL, NULL);
@@ -504,14 +516,13 @@ status_t SurfaceFlinger::readyToRun()
     // initialize our non-virtual displays
     for (size_t i=0 ; i<DisplayDevice::NUM_DISPLAY_TYPES ; i++) {
         DisplayDevice::DisplayType type((DisplayDevice::DisplayType)i);
-        mDefaultDisplays[i] = new BBinder();
-        wp<IBinder> token = mDefaultDisplays[i];
-
         // set-up the displays that are already connected
         if (mHwc->isConnected(i) || type==DisplayDevice::DISPLAY_PRIMARY) {
             // All non-virtual displays are currently considered secure.
             bool isSecure = true;
-            mCurrentState.displays.add(token, DisplayDeviceState(type));
+            createBuiltinDisplayLocked(type);
+            wp<IBinder> token = mBuiltinDisplays[i];
+
             sp<FramebufferSurface> fbs = new FramebufferSurface(*mHwc, i);
             sp<SurfaceTextureClient> stc = new SurfaceTextureClient(
                         static_cast< sp<ISurfaceTexture> >(fbs->getBufferQueue()));
@@ -634,9 +645,9 @@ bool SurfaceFlinger::authenticateSurfaceTexture(
 }
 
 status_t SurfaceFlinger::getDisplayInfo(const sp<IBinder>& display, DisplayInfo* info) {
-    int32_t type = BAD_VALUE;
+    int32_t type = NAME_NOT_FOUND;
     for (int i=0 ; i<DisplayDevice::NUM_DISPLAY_TYPES ; i++) {
-        if (display == mDefaultDisplays[i]) {
+        if (display == mBuiltinDisplays[i]) {
             type = i;
             break;
         }
@@ -647,10 +658,6 @@ status_t SurfaceFlinger::getDisplayInfo(const sp<IBinder>& display, DisplayInfo*
     }
 
     const HWComposer& hwc(getHwComposer());
-    if (!hwc.isConnected(type)) {
-        return NAME_NOT_FOUND;
-    }
-
     float xdpi = hwc.getDpiX(type);
     float ydpi = hwc.getDpiY(type);
 
@@ -778,11 +785,11 @@ void SurfaceFlinger::onHotplugReceived(int type, bool connected) {
 
     if (uint32_t(type) < DisplayDevice::NUM_DISPLAY_TYPES) {
         Mutex::Autolock _l(mStateLock);
-        if (connected == false) {
-            mCurrentState.displays.removeItem(mDefaultDisplays[type]);
+        if (connected) {
+            createBuiltinDisplayLocked((DisplayDevice::DisplayType)type);
         } else {
-            DisplayDeviceState info((DisplayDevice::DisplayType)type);
-            mCurrentState.displays.add(mDefaultDisplays[type], info);
+            mCurrentState.displays.removeItem(mBuiltinDisplays[type]);
+            mBuiltinDisplays[type].clear();
         }
         setTransactionFlags(eDisplayTransactionNeeded);
 
@@ -1191,7 +1198,6 @@ void SurfaceFlinger::handleTransactionLocked(uint32_t transactionFlags)
             for (size_t i=0 ; i<cc ; i++) {
                 if (draw.indexOfKey(curr.keyAt(i)) < 0) {
                     const DisplayDeviceState& state(curr[i]);
-                    bool isSecure = false;
 
                     sp<FramebufferSurface> fbs;
                     sp<SurfaceTextureClient> stc;
@@ -1201,10 +1207,6 @@ void SurfaceFlinger::handleTransactionLocked(uint32_t transactionFlags)
                                 "adding a supported display, but rendering "
                                 "surface is provided (%p), ignoring it",
                                 state.surface.get());
-
-                        // All non-virtual displays are currently considered
-                        // secure.
-                        isSecure = true;
 
                         // for supported (by hwc) displays we provide our
                         // own rendering surface
@@ -1216,13 +1218,12 @@ void SurfaceFlinger::handleTransactionLocked(uint32_t transactionFlags)
                         if (state.surface != NULL) {
                             stc = new SurfaceTextureClient(state.surface);
                         }
-                        isSecure = state.isSecure;
                     }
 
                     const wp<IBinder>& display(curr.keyAt(i));
                     if (stc != NULL) {
                         sp<DisplayDevice> hw = new DisplayDevice(this,
-                                state.type, isSecure, display, stc, fbs,
+                                state.type, state.isSecure, display, stc, fbs,
                                 mEGLConfig);
                         hw->setLayerStack(state.layerStack);
                         hw->setProjection(state.orientation,
@@ -1559,7 +1560,11 @@ void SurfaceFlinger::doComposeSurfaces(const sp<const DisplayDevice>& hw, const 
 
     const bool hasGlesComposition = hwc.hasGlesComposition(id) || (cur==end);
     if (hasGlesComposition) {
-        DisplayDevice::makeCurrent(mEGLDisplay, hw, mEGLContext);
+        if (!DisplayDevice::makeCurrent(mEGLDisplay, hw, mEGLContext)) {
+            ALOGW("DisplayDevice::makeCurrent failed. Aborting surface composition for display %s",
+                  hw->getDisplayName().string());
+            return;
+        }
 
         // set the frame buffer
         glMatrixMode(GL_MODELVIEW);
@@ -2147,7 +2152,7 @@ void SurfaceFlinger::onInitializeDisplays() {
     Vector<DisplayState> displays;
     DisplayState d;
     d.what = DisplayState::eDisplayProjectionChanged;
-    d.token = mDefaultDisplays[DisplayDevice::DISPLAY_PRIMARY];
+    d.token = mBuiltinDisplays[DisplayDevice::DISPLAY_PRIMARY];
     d.orientation = DisplayState::eOrientationDefault;
     d.frame.makeInvalid();
     d.viewport.makeInvalid();
