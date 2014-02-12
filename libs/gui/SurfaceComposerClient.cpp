@@ -617,7 +617,21 @@ void SurfaceComposerClient::unblankDisplay(const sp<IBinder>& token) {
     ComposerService::getComposerService()->unblank(token);
 }
 
+#if defined(TOROPLUS_RADIO)
+status_t SurfaceComposerClient::getDisplayInfo(
+        int32_t displayId, DisplayInfo* info)
+{
+    return getDisplayInfo(getBuiltInDisplay(displayId), info);
+}
+#endif
+
 // ----------------------------------------------------------------------------
+
+#ifndef FORCE_SCREENSHOT_CPU_PATH
+#define SS_CPU_CONSUMER false
+#else
+#define SS_CPU_CONSUMER true
+#endif
 
 status_t ScreenshotClient::capture(
         const sp<IBinder>& display,
@@ -627,7 +641,8 @@ status_t ScreenshotClient::capture(
     sp<ISurfaceComposer> s(ComposerService::getComposerService());
     if (s == NULL) return NO_INIT;
     return s->captureScreen(display, producer,
-            reqWidth, reqHeight, minLayerZ, maxLayerZ);
+            reqWidth, reqHeight, minLayerZ, maxLayerZ,
+            SS_CPU_CONSUMER);
 }
 
 ScreenshotClient::ScreenshotClient()
@@ -638,6 +653,13 @@ ScreenshotClient::ScreenshotClient()
 ScreenshotClient::~ScreenshotClient() {
     ScreenshotClient::release();
 }
+
+#if defined(TOROPLUS_RADIO)
+status_t ScreenshotClient::update() {
+    sp<ISurfaceComposer> sm(ComposerService::getComposerService());
+    return update(sm->getBuiltInDisplay(0));
+}
+#endif
 
 sp<CpuConsumer> ScreenshotClient::getCpuConsumer() const {
     if (mCpuConsumer == NULL) {
@@ -662,7 +684,7 @@ status_t ScreenshotClient::update(const sp<IBinder>& display,
     }
 
     status_t err = s->captureScreen(display, mBufferQueue,
-            reqWidth, reqHeight, minLayerZ, maxLayerZ);
+            reqWidth, reqHeight, minLayerZ, maxLayerZ, true);
 
     if (err == NO_ERROR) {
         err = mCpuConsumer->lockNextBuffer(&mBuffer);
